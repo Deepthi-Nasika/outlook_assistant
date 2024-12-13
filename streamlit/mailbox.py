@@ -19,19 +19,6 @@ load_dotenv()
 
 query_params = st.query_params
 
-# token = query_params.get("access_token", None)
-# name = query_params.get("name", None)
-# preferred_username = query_params.get("preferred_username", None)
-
-# if "access_token" not in st.session_state:
-#     st.session_state["access_token"] = token
-
-# if "name" not in st.session_state:
-#     st.session_state["name"] = name
-
-# if "preferred_username" not in st.session_state:
-#     st.session_state["preferred_username"] = preferred_username
-
 # Initialize EmailService
 email_service = EmailService()
 
@@ -156,6 +143,14 @@ def initialize_session_state():
         st.session_state.transcribed_text = ""
     if st.button("💬 Chat"):
         st.session_state.show_chat = not st.session_state.get('show_chat', False)
+    if 'reply_to' not in st.session_state:
+        st.session_state.reply_to = ''
+    if 'reply_subject' not in st.session_state:
+        st.session_state.reply_subject = ''
+    if 'reply_content' not in st.session_state:
+        st.session_state.reply_content = ''
+    if 'reply_content_plain' not in st.session_state:
+        st.session_state.reply_content_plain = ''
         
 
 # Fetch emails and update session state
@@ -442,45 +437,55 @@ def render_selected_email():
         st.markdown("#### Reply")
         
         # Replace the st_quill with custom reply form
-        reply_to = email_data.get('sender_email', '')
-        reply_subject = f"Re: {email_data.get('subject', 'No Subject')}"
-        original_body = email_data.get('body', '')
-        
-        # To field
-        st.text_input("To:", value=reply_to, key="reply_to")
-        
-        # Subject field
-        st.text_input("Subject:", value=reply_subject, key="reply_subject")
-        
-        # Body field with formatting toolbar
-        st.markdown("""
-        <div style="border-bottom: 1px solid #ddd; padding: 8px 0; margin-bottom: 8px;">
-            <button style="margin-right: 8px; padding: 4px 8px;">B</button>
-            <button style="margin-right: 8px; padding: 4px 8px;"><i>I</i></button>
-            <button style="margin-right: 8px; padding: 4px 8px;"><u>U</u></button>
-            <select style="padding: 4px 8px;">
-                <option>Sans Serif</option>
-                <option>Serif</option>
-            </select>
-        </div>
-        """, unsafe_allow_html=True)
-        
+        reply_to = st.text_input(
+                    "To:", 
+                    value=st.session_state.reply_to,
+                    key="reply_to_input"
+                )
+                # Subject field
+        reply_subject = st.text_input(
+                    "Subject:", 
+                    value=st.session_state.reply_subject,
+                    key="reply_subject_input"
+                )
+
+        # Body field
         reply_content = st.text_area(
-            "Body:",
-            value="",
-            height=300,
-            key="reply_body",
-            label_visibility="collapsed"
-        )
+                    "Body:",
+                    value=st.session_state.reply_content_plain if st.session_state.reply_content_plain else st.session_state.reply_content,
+                    height=300,
+                    key="reply_body_input",
+                    label_visibility="collapsed"
+                )
         
-        # Buttons
         col1, col2, col3 = st.columns([2, 2, 8])  
         with col1:
-            if st.button("Send", type="primary", use_container_width=True):  
-                # Handle send logic here
-                pass
+            if st.button("Send", type="primary", use_container_width=True):
+                try:
+                    # Call send_email function with the correct format
+                    response = email_service.send_email(
+                        st.session_state["preferred_username"],
+                        {
+                            "recipient_email": reply_to,
+                            "subject": reply_subject,
+                            "body": st.session_state.reply_content
+                        }
+                    )
+                    if response.get("status") == 200:
+                        st.success("Email sent successfully!")
+                        # Clear the reply fields
+                        st.session_state.reply_to = ''
+                        st.session_state.reply_subject = ''
+                        st.session_state.reply_content = ''
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to send email: {response.get('message', 'Unknown error')}")
+                except Exception as e:
+                    st.error(f"Error sending email: {str(e)}")
+                    logger.error(f"Error sending email: {str(e)}")
+
         with col2:
-            if st.button("Save Draft", use_container_width=True):  
+            if st.button("Save Draft", use_container_width=True):
                 # Handle draft saving logic here
                 pass
                     
@@ -565,9 +570,50 @@ def render_chat_window():
             st.session_state.selected_email_id
         )
         logger.info(f"Response from the chat window: {response}")
+
+        # Initialize a formatted response string
+        formatted_response = ""
+        
+        # Check and add corrected prompt if available
+        if response.get("corrected_prompt"):
+            formatted_response += "🔄 **Prompt Correction**\n"
+            formatted_response += f"{response['corrected_prompt']}\n\n"
+        
+        # Check and add RAG response if successful
+        if response.get("rag_status") == "success" and response.get("rag_response"):
+            formatted_response += "🔍 **Retrieved Information**\n"
+            formatted_response += f"{response['rag_response']}\n\n"
+        
+        # Check and add conversation summary if available
+        if response.get("conversation_summary"):
+            formatted_response += "📝 **Conversation Summary**\n"
+            formatted_response += f"{response['conversation_summary']}\n\n"
+        
+        # Check and add response output if available
+        if response.get("response_output"):
+            formatted_response += "💬 **Response**\n"
+            formatted_response += f"{response['response_output']}\n\n"
+            try:
+                response_output = response['response_output']
+                st.session_state.reply_to = response_output.get('sender_email', '')
+                st.session_state.reply_subject = response_output.get('subject', '')
+                st.session_state.reply_content = response_output.get('body', '')
+                st.session_state.reply_content_plain = response_output.get('plain_text', '')
+            except Exception as e:
+                logger.error(f"Error parsing response output: {e}")
+                formatted_response += "⚠️ Error setting up reply form with generated response\n"
+
+        formatted_response += f"I've prepared a response to {st.session_state.reply_to}. You can review and send it from the reply form."
+            # email_service.send_email(st.session_state["preferred_username"], response['response_output'])
+            # formatted_response += f"{response['Response generated successfully']}\n\n"
+             
+        # If no content was added, use a default message
+        if not formatted_response:
+            formatted_response = "I couldn't process your request at this time."
+
         st.session_state.messages.append({
             "role": "assistant",
-            "content": response
+            "content": formatted_response
         })
         st.rerun()
     
